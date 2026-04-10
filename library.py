@@ -1,9 +1,7 @@
 import streamlit as st
-import requests
-import pandas as pd
 import google.generativeai as genai
-import xml.etree.ElementTree as ET
 import json
+from urllib.parse import quote
 
 st.set_page_config(
     page_title="📚 독서 주치의 — 양평도서관",
@@ -11,30 +9,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── 스타일 ──────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;700&family=Noto+Sans+KR:wght@300;400;500&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', sans-serif;
-}
-h1, h2, h3 {
-    font-family: 'Noto Serif KR', serif;
-}
-.main { background-color: #0f0f0f; }
+html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
+h1, h2, h3 { font-family: 'Noto Serif KR', serif; }
 .stApp { background-color: #0f0f0f; color: #e8e0d0; }
 
 .book-card {
     background: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 16px;
-    transition: border-color 0.2s;
+    padding: 20px 24px;
+    margin-bottom: 14px;
 }
 .book-card:hover { border-color: #c8a96e; }
-
 .score-badge {
     display: inline-block;
     background: #c8a96e;
@@ -45,22 +35,6 @@ h1, h2, h3 {
     border-radius: 20px;
     margin-right: 8px;
 }
-.available-badge {
-    display: inline-block;
-    background: #2d5a27;
-    color: #7dcc74;
-    font-size: 12px;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
-.unavailable-badge {
-    display: inline-block;
-    background: #3a1a1a;
-    color: #cc7474;
-    font-size: 12px;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
 .book-title {
     font-family: 'Noto Serif KR', serif;
     font-size: 18px;
@@ -68,348 +42,197 @@ h1, h2, h3 {
     color: #e8e0d0;
     margin: 8px 0 4px 0;
 }
-.book-author {
-    font-size: 13px;
-    color: #888;
-    margin-bottom: 10px;
-}
+.book-author { font-size: 13px; color: #888; margin-bottom: 10px; }
 .ai-comment {
-    font-size: 14px;
-    color: #b8b0a0;
-    line-height: 1.6;
+    font-size: 14px; color: #b8b0a0; line-height: 1.6;
     border-left: 2px solid #c8a96e;
-    padding-left: 12px;
-    margin-top: 10px;
+    padding-left: 12px; margin-top: 10px;
 }
 .header-title {
     font-family: 'Noto Serif KR', serif;
-    font-size: 32px;
-    font-weight: 700;
-    color: #c8a96e;
-    margin-bottom: 4px;
+    font-size: 32px; font-weight: 700; color: #c8a96e; margin-bottom: 4px;
 }
-.header-sub {
-    font-size: 14px;
-    color: #666;
-    margin-bottom: 32px;
-}
+.header-sub { font-size: 14px; color: #666; margin-bottom: 32px; }
 .stat-box {
-    background: #1a1a1a;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 16px;
-    text-align: center;
+    background: #1a1a1a; border: 1px solid #2a2a2a;
+    border-radius: 8px; padding: 16px; text-align: center;
 }
-.stat-num {
-    font-size: 28px;
-    font-weight: 700;
-    color: #c8a96e;
+.stat-num { font-size: 28px; font-weight: 700; color: #c8a96e; }
+.stat-label { font-size: 12px; color: #666; margin-top: 4px; }
+a.lib-btn {
+    display: inline-block;
+    margin-top: 12px;
+    background: #1e3a2e;
+    color: #7dcc74 !important;
+    border: 1px solid #2d5a40;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    text-decoration: none !important;
 }
-.stat-label {
-    font-size: 12px;
-    color: #666;
-    margin-top: 4px;
-}
+a.lib-btn:hover { background: #2d5a40; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── 독서 DNA 정의 ──────────────────────────────────────
 READING_DNA = """
 [고평점 픽션 DNA — 4.5~5.0점]
 - 연작/앤솔로지 구조, 챕터마다 시점 전환, 반전 축적
 - 동아시아 작가 압도적 선호 (한국·일본·홍콩·중국)
 - 앙상블 캐릭터, 사회 비평, 심리적 깊이
 - 충격적 반전과 감정적 폭발이 있는 미스터리/스릴러
-- 대표작: 《13.67》찬호께이(5.0), 《성모》아키요시 리카코(4.5), 《살육에 이르는 병》아비코(4.5), 《여섯명의 거짓말쟁이 대학생》(4.5)
+- 대표 고평점: 《13.67》찬호께이(5.0), 《성모》아키요시 리카코(4.5), 《살육에 이르는 병》아비코(4.5), 《여섯명의 거짓말쟁이 대학생》아사쿠라(4.5), 《풍선인간》찬호께이(4.5), 《홍학의 자리》정해연(4.5)
 
 [고평점 논픽션 DNA — 4.5~5.0점]
 - 세계관 렌즈를 통째로 바꾸는 책
-- 반직관적 프레임워크, 확률적 사고
+- 반직관적 프레임워크, 확률적 사고, 역발상
 - 빠른 챕터 페이스, 즉각 적용 가능한 통찰
-- 대표작: 《안티프래질》탈레브(5.0), 《투자에 대한 생각》하워드 막스(5.0), 《감정은 어떻게 만들어지는가》배럿(5.0)
+- 대표 고평점: 《안티프래질》탈레브(5.0), 《투자에 대한 생각》하워드 막스(5.0), 《감정은 어떻게 만들어지는가》배럿(5.0)
 
-[확인된 트랩 패턴 — 저평점 반복]
-- 서양 문학 고전 + 실존주의 내면 독백 (카뮈, 쿤데라, 오스틴 → 1.5~2.0)
-- 순수 격언/아포리즘 컬렉션 (에픽테토스 → 1.0)
-- 강의 편집·컴파일 형식 (가난한 찰리의 연감 → 2.0)
+[확인된 트랩 패턴 — 절대 추천 금지]
+- 서양 문학 고전 + 실존주의 내면 독백 (카뮈, 쿤데라, 오스틴)
+- 순수 격언/아포리즘 컬렉션
+- 강의 편집·컴파일 형식
 - 여러 인물 사례 나열식 구성
-- 장황한 묘사 위주의 서양 문학
-- 추천 금지: 《미움받을 용기》, 《죽음의 수용소에서》
+- 추천 절대 금지 도서: 《미움받을 용기》, 《죽음의 수용소에서》
+
+[이미 읽은 책 — 추천 제외]
+히가시노 게이고(마구/악의/숙명/편지/용의자X/나미야/녹나무), 찬호께이(13.67/풍선인간/염소가웃는순간/망내인/기억나지않음형사),
+아키요시 리카코(성모/유리의살의), 미나토 가나에(고백/속죄), 아비코 다케마루(살육에이르는병),
+나카야마 시치리(연쇄살인마개구리남자), 아사쿠라 아키나리(여섯명의거짓말쟁이대학생),
+정해연(유괴의날/홍학의자리), 양귀자(희망/원미동사람들/모순), 천명관(고래),
+탈레브(안티프래질/행운에속지마라), 하워드막스(투자에대한생각), 리사펠드먼배럿(감정은어떻게만들어지는가)
 """
 
-# ── API 설정 ────────────────────────────────────────────
-def get_api_keys():
+def get_gemini_key():
     try:
-        gemini_key = st.secrets["GEMINI_API_KEY"]
-        library_key = st.secrets["LIBRARY_API_KEY"]
-        return gemini_key, library_key
-    except:
-        return None, None
-
-# ── 정보나루 API ─────────────────────────────────────────
-LIB_CODE = None  # 자동 검색
-
-def find_lib_code(auth_key, lib_name="양평"):
-    """도서관 코드 자동 검색"""
-    url = "http://data4library.kr/api/libSrch"
-    params = {
-        "authKey": auth_key,
-        "libName": lib_name,
-        "pageSize": 10
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        root = ET.fromstring(resp.text)
-        libs = root.findall(".//lib")
-        if libs:
-            code = libs[0].findtext("libCode", "")
-            name = libs[0].findtext("libName", "")
-            return code, name
-        return None, None
-    except Exception as e:
-        st.error(f"도서관 검색 오류: {e} / 응답: {resp.text[:200]}")
-        return None, None
-
-def get_new_arrivals(auth_key, page_size=30):
-    """양평도서관 신착도서 조회"""
-    lib_code, lib_name = find_lib_code(auth_key, "양평")
-    if not lib_code:
-        st.error("양평도서관 코드를 찾을 수 없습니다.")
-        return []
-    st.session_state["lib_code"] = lib_code
-    url = "http://data4library.kr/api/newArrivalList"
-    params = {
-        "authKey": auth_key,
-        "libCode": lib_code,
-        "pageNo": 1,
-        "pageSize": page_size
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        root = ET.fromstring(resp.text)
-        docs = root.findall(".//doc")
-        books = []
-        for doc in docs:
-            books.append({
-                "title": doc.findtext("bookname", ""),
-                "author": doc.findtext("authors", ""),
-                "publisher": doc.findtext("publisher", ""),
-                "isbn": doc.findtext("isbn13", ""),
-                "pub_date": doc.findtext("publication_year", ""),
-                "class_nm": doc.findtext("class_nm", ""),
-                "bookImageURL": doc.findtext("bookImageURL", ""),
-                "loan_count": doc.findtext("loan_count", "0"),
-            })
-        return books
-    except Exception as e:
-        st.error(f"신착도서 조회 실패: {e} / 응답: {resp.text[:200]}")
-        return []
-
-def check_availability(auth_key, isbn):
-    """대출 가능 여부 확인"""
-    if not isbn:
-        return None
-    lib_code = st.session_state.get("lib_code", "")
-    if not lib_code:
-        return None
-    url = "http://data4library.kr/api/bookExist"
-    params = {
-        "authKey": auth_key,
-        "libCode": lib_code,
-        "isbn13": isbn,
-        "format": "json"
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=5)
-        root = ET.fromstring(resp.text)
-        has_book = root.findtext(".//hasBook", "N")
-        loan_available = root.findtext(".//loanAvailable", "N")
-        return {"has_book": has_book == "Y", "loan_available": loan_available == "Y"}
+        return st.secrets["GEMINI_API_KEY"]
     except:
         return None
 
-# ── Gemini 분석 ─────────────────────────────────────────
-def analyze_books_with_gemini(gemini_key, books):
-    """Gemini로 취향 적중률 분석"""
+def generate_recommendations(gemini_key, genre, count):
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
-    book_list = "\n".join([
-        f"{i+1}. 제목: {b['title']} | 저자: {b['author']} | 분류: {b['class_nm']}"
-        for i, b in enumerate(books)
-    ])
-
     prompt = f"""
-당신은 독서 취향 분석 전문가입니다. 아래 독서 DNA를 가진 독자를 위해 신착 도서 목록을 분석하세요.
+당신은 독서 취향 분석 전문가입니다. 아래 독서 DNA를 가진 독자에게 맞는 책을 추천하세요.
 
 [독자의 독서 DNA]
 {READING_DNA}
 
-[양평도서관 신착 도서 목록]
-{book_list}
+요청: {genre} 장르에서 {count}권 추천
+- 이미 읽은 책 목록에 있는 책은 절대 추천하지 마세요
+- 추천 금지 도서는 절대 포함하지 마세요
+- 한국 출판 시장에서 구할 수 있는 책으로 추천하세요
 
-각 책에 대해 아래 JSON 배열로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세요:
+아래 JSON 배열로만 응답하세요. 다른 텍스트 없이 JSON만:
 [
   {{
-    "index": 1,
-    "score": 85,
-    "reason": "취향 적중 이유를 1~2문장으로 (투자 언어 사용: 강력매수/매수/보류/매도)",
-    "verdict": "강력매수"
-  }},
-  ...
+    "title": "책 제목 (원제 아닌 한국어 출판 제목)",
+    "author": "저자명",
+    "score": 88,
+    "verdict": "강력매수",
+    "reason": "이 독자에게 맞는 이유 1~2문장. 포트폴리오 선례 인용 필수."
+  }}
 ]
 
-score: 0~100 (취향 적중률). 트랩 패턴은 20 이하. 동아시아 미스터리/반전 구조는 80 이상.
-verdict: 강력매수(80+) / 매수(60~79) / 보류(40~59) / 매도(40 미만)
-모든 책에 대해 반드시 응답하세요.
+score: 0~100 (취향 적중률 예측)
+verdict: 강력매수(80+) / 매수(60~79) / 관심종목(40~59)
 """
-
     try:
         response = model.generate_content(prompt)
         text = response.text.strip()
-        # JSON 파싱
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         return json.loads(text)
     except Exception as e:
-        st.error(f"Gemini 분석 실패: {e}")
+        st.error(f"AI 분석 실패: {e}")
         return []
 
-# ── 메인 UI ─────────────────────────────────────────────
+def yangpyeong_search_url(title, author):
+    query = f"{title} {author}".strip()
+    encoded = quote(query)
+    return f"https://www.yplib.go.kr/search/tot/searchTotList.do?kwd={encoded}"
+
 def main():
     st.markdown('<div class="header-title">📚 독서 주치의</div>', unsafe_allow_html=True)
-    st.markdown('<div class="header-sub">양평도서관 신착도서 × 나의 독서 DNA 분석</div>', unsafe_allow_html=True)
+    st.markdown('<div class="header-sub">나의 독서 DNA 기반 추천 → 양평도서관 바로 검색</div>', unsafe_allow_html=True)
 
-    gemini_key, library_key = get_api_keys()
-
-    if not gemini_key or not library_key:
-        st.warning("⚙️ secrets.toml에 API 키를 설정해주세요.")
-        with st.expander("설정 방법 보기"):
-            st.code("""
-# .streamlit/secrets.toml
-GEMINI_API_KEY = "여기에_Gemini_키_입력"
-LIBRARY_API_KEY = "여기에_정보나루_키_입력"
-""", language="toml")
+    gemini_key = get_gemini_key()
+    if not gemini_key:
+        st.warning("⚙️ Secrets에 GEMINI_API_KEY를 설정해주세요.")
         return
 
-    # ── 컨트롤 바 ──
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        page_size = st.slider("신착도서 조회 수", 10, 50, 20, 5)
+        genre = st.selectbox("장르", [
+            "전체 (픽션 + 논픽션)",
+            "미스터리 / 스릴러",
+            "한국 소설",
+            "일본 소설",
+            "논픽션 / 자기계발",
+            "투자 / 경제",
+            "심리학 / 뇌과학",
+            "만화 / 그래픽노블",
+        ])
     with col2:
-        min_score = st.slider("최소 적중률", 0, 100, 50, 10)
+        count = st.slider("추천 권수", 5, 20, 10, 5)
     with col3:
-        only_available = st.checkbox("대출 가능만", value=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    if st.button("🔍 분석 시작", type="primary", use_container_width=True):
-        
-        # 1. 신착도서 조회
-        with st.spinner("양평도서관 신착도서 불러오는 중..."):
-            books = get_new_arrivals(library_key, page_size)
-        
+    if st.button("🔍 추천 받기", type="primary", use_container_width=True):
+        with st.spinner(f"📖 독서 DNA 분석 중... {genre} {count}권 추천 생성"):
+            books = generate_recommendations(gemini_key, genre, count)
+
         if not books:
-            st.error("신착도서를 불러올 수 없습니다. 도서관 코드 또는 API 키를 확인하세요.")
+            st.error("추천 생성에 실패했습니다.")
             return
 
-        # 2. Gemini 분석
-        with st.spinner(f"📖 {len(books)}권을 독서 DNA로 분석 중..."):
-            analysis = analyze_books_with_gemini(gemini_key, books)
+        books.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-        if not analysis:
-            st.error("AI 분석에 실패했습니다.")
-            return
-
-        # 3. 대출 가능 여부 확인
-        with st.spinner("대출 현황 확인 중..."):
-            availability = {}
-            for book in books:
-                if book["isbn"]:
-                    availability[book["isbn"]] = check_availability(library_key, book["isbn"])
-
-        # 4. 결과 병합 및 정렬
-        results = []
-        analysis_map = {a["index"]: a for a in analysis}
-        
-        for i, book in enumerate(books):
-            a = analysis_map.get(i + 1, {})
-            score = a.get("score", 0)
-            avail = availability.get(book["isbn"])
-            loan_ok = avail["loan_available"] if avail else False
-            
-            if score < min_score:
-                continue
-            if only_available and not loan_ok:
-                continue
-
-            results.append({
-                **book,
-                "score": score,
-                "reason": a.get("reason", ""),
-                "verdict": a.get("verdict", ""),
-                "loan_available": loan_ok,
-            })
-
-        results.sort(key=lambda x: x["score"], reverse=True)
-
-        # 5. 통계
         st.divider()
-        s1, s2, s3, s4 = st.columns(4)
+        s1, s2, s3 = st.columns(3)
+        strong = sum(1 for b in books if b.get("score", 0) >= 80)
+        avg = int(sum(b.get("score", 0) for b in books) / len(books)) if books else 0
+
         with s1:
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{len(books)}</div><div class="stat-label">신착도서</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="stat-box"><div class="stat-num">{len(books)}</div><div class="stat-label">추천 도서</div></div>', unsafe_allow_html=True)
         with s2:
-            strong_buy = sum(1 for r in results if r["score"] >= 80)
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{strong_buy}</div><div class="stat-label">강력매수</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="stat-box"><div class="stat-num">{strong}</div><div class="stat-label">강력매수</div></div>', unsafe_allow_html=True)
         with s3:
-            avail_count = sum(1 for r in results if r["loan_available"])
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{avail_count}</div><div class="stat-label">지금 대출 가능</div></div>', unsafe_allow_html=True)
-        with s4:
-            avg = int(sum(r["score"] for r in results) / len(results)) if results else 0
             st.markdown(f'<div class="stat-box"><div class="stat-num">{avg}</div><div class="stat-label">평균 적중률</div></div>', unsafe_allow_html=True)
 
         st.divider()
+        st.markdown(f"### 🎯 추천 결과 ({len(books)}권) — 양평도서관 재고 직접 확인")
 
-        if not results:
-            st.info("조건에 맞는 책이 없습니다. 필터를 조정해보세요.")
-            return
+        for b in books:
+            score = b.get("score", 0)
+            verdict = b.get("verdict", "")
+            title = b.get("title", "")
+            author = b.get("author", "")
+            reason = b.get("reason", "")
+            lib_url = yangpyeong_search_url(title, author)
 
-        # 6. 도서 카드
-        st.markdown(f"### 🎯 추천 결과 ({len(results)}권)")
-
-        for r in results:
             verdict_color = {
                 "강력매수": "#c8a96e",
-                "매수": "#7dcc74", 
-                "보류": "#ccaa44",
-                "매도": "#cc7474"
-            }.get(r["verdict"], "#888")
-
-            avail_html = (
-                '<span class="available-badge">✅ 대출 가능</span>' 
-                if r["loan_available"] 
-                else '<span class="unavailable-badge">⏳ 대출 중</span>'
-            )
+                "매수": "#7dcc74",
+                "관심종목": "#ccaa44"
+            }.get(verdict, "#888")
 
             st.markdown(f"""
 <div class="book-card">
-    <span class="score-badge">{r['score']}점</span>
-    <span style="color:{verdict_color}; font-weight:600; font-size:13px;">{r['verdict']}</span>
-    {avail_html}
-    <div class="book-title">{r['title']}</div>
-    <div class="book-author">{r['author']} · {r['publisher']} · {r['pub_date']}</div>
-    <div class="ai-comment">{r['reason']}</div>
+    <span class="score-badge">{score}점</span>
+    <span style="color:{verdict_color}; font-weight:600; font-size:13px;">{verdict}</span>
+    <div class="book-title">{title}</div>
+    <div class="book-author">{author}</div>
+    <div class="ai-comment">{reason}</div>
+    <a class="lib-btn" href="{lib_url}" target="_blank">📖 양평도서관에서 검색 →</a>
 </div>
 """, unsafe_allow_html=True)
 
     else:
-        st.info("👆 분석 시작 버튼을 눌러주세요.")
-        st.markdown("""
-        **이 앱은:**
-        - 양평도서관 신착 도서를 실시간으로 가져옵니다
-        - AI가 당신의 독서 DNA(226권 분석)와 비교합니다
-        - 지금 당장 빌릴 수 있는 책만 필터링합니다
-        """)
+        st.info("👆 장르 선택 후 추천 받기 버튼을 눌러주세요.")
 
 if __name__ == "__main__":
     main()
