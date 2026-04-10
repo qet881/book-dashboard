@@ -155,19 +155,19 @@ def find_lib_code(auth_key, lib_name="양평"):
     params = {
         "authKey": auth_key,
         "libName": lib_name,
-        "format": "json",
         "pageSize": 10
     }
     try:
         resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        libs = data.get("response", {}).get("libs", [])
+        root = ET.fromstring(resp.text)
+        libs = root.findall(".//lib")
         if libs:
-            # 첫 번째 결과 반환
-            lib = libs[0].get("lib", {})
-            return lib.get("libCode", ""), lib.get("libName", "")
+            code = libs[0].findtext("libCode", "")
+            name = libs[0].findtext("libName", "")
+            return code, name
         return None, None
     except Exception as e:
+        st.error(f"도서관 검색 오류: {e} / 응답: {resp.text[:200]}")
         return None, None
 
 def get_new_arrivals(auth_key, page_size=30):
@@ -182,29 +182,27 @@ def get_new_arrivals(auth_key, page_size=30):
         "authKey": auth_key,
         "libCode": lib_code,
         "pageNo": 1,
-        "pageSize": page_size,
-        "format": "json"
+        "pageSize": page_size
     }
     try:
         resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        docs = data.get("response", {}).get("docs", [])
+        root = ET.fromstring(resp.text)
+        docs = root.findall(".//doc")
         books = []
         for doc in docs:
-            d = doc.get("doc", {})
             books.append({
-                "title": d.get("bookname", ""),
-                "author": d.get("authors", ""),
-                "publisher": d.get("publisher", ""),
-                "isbn": d.get("isbn13", ""),
-                "pub_date": d.get("publication_year", ""),
-                "class_nm": d.get("class_nm", ""),
-                "bookImageURL": d.get("bookImageURL", ""),
-                "loan_count": d.get("loan_count", 0),
+                "title": doc.findtext("bookname", ""),
+                "author": doc.findtext("authors", ""),
+                "publisher": doc.findtext("publisher", ""),
+                "isbn": doc.findtext("isbn13", ""),
+                "pub_date": doc.findtext("publication_year", ""),
+                "class_nm": doc.findtext("class_nm", ""),
+                "bookImageURL": doc.findtext("bookImageURL", ""),
+                "loan_count": doc.findtext("loan_count", "0"),
             })
         return books
     except Exception as e:
-        st.error(f"신착도서 조회 실패: {e}")
+        st.error(f"신착도서 조회 실패: {e} / 응답: {resp.text[:200]}")
         return []
 
 def check_availability(auth_key, isbn):
@@ -223,10 +221,9 @@ def check_availability(auth_key, isbn):
     }
     try:
         resp = requests.get(url, params=params, timeout=5)
-        data = resp.json()
-        result = data.get("response", {}).get("result", {})
-        has_book = result.get("hasBook", "N")
-        loan_available = result.get("loanAvailable", "N")
+        root = ET.fromstring(resp.text)
+        has_book = root.findtext(".//hasBook", "N")
+        loan_available = root.findtext(".//loanAvailable", "N")
         return {"has_book": has_book == "Y", "loan_available": loan_available == "Y"}
     except:
         return None
