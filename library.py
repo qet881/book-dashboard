@@ -147,14 +147,40 @@ def get_api_keys():
         return None, None
 
 # ── 정보나루 API ─────────────────────────────────────────
-LIB_CODE = "264032"  # 양평군립도서관
+LIB_CODE = None  # 자동 검색
+
+def find_lib_code(auth_key, lib_name="양평"):
+    """도서관 코드 자동 검색"""
+    url = "http://data4library.kr/api/libSrch"
+    params = {
+        "authKey": auth_key,
+        "libName": lib_name,
+        "format": "json",
+        "pageSize": 10
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        libs = data.get("response", {}).get("libs", [])
+        if libs:
+            # 첫 번째 결과 반환
+            lib = libs[0].get("lib", {})
+            return lib.get("libCode", ""), lib.get("libName", "")
+        return None, None
+    except Exception as e:
+        return None, None
 
 def get_new_arrivals(auth_key, page_size=30):
     """양평도서관 신착도서 조회"""
+    lib_code, lib_name = find_lib_code(auth_key, "양평")
+    if not lib_code:
+        st.error("양평도서관 코드를 찾을 수 없습니다.")
+        return []
+    st.session_state["lib_code"] = lib_code
     url = "http://data4library.kr/api/newArrivalList"
     params = {
         "authKey": auth_key,
-        "libCode": LIB_CODE,
+        "libCode": lib_code,
         "pageNo": 1,
         "pageSize": page_size,
         "format": "json"
@@ -185,10 +211,13 @@ def check_availability(auth_key, isbn):
     """대출 가능 여부 확인"""
     if not isbn:
         return None
+    lib_code = st.session_state.get("lib_code", "")
+    if not lib_code:
+        return None
     url = "http://data4library.kr/api/bookExist"
     params = {
         "authKey": auth_key,
-        "libCode": LIB_CODE,
+        "libCode": lib_code,
         "isbn13": isbn,
         "format": "json"
     }
