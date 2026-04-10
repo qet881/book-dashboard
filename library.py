@@ -1,6 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
+from google import genai
+from google.genai import types
 import json
+import os
+import re
 from urllib.parse import quote
 
 st.set_page_config(
@@ -26,64 +30,7 @@ h1, h2, h3 { font-family: 'Noto Serif KR', serif; }
 }
 .book-card:hover { border-color: #c8a96e; }
 .score-badge {
-    display: inline-block;
-    background: #c8a96e;
-    color: #0f0f0f;
-    font-weight: 700;
-    font-size: 13px;
-    padding: 3px 10px;
-    border-radius: 20px;
-    margin-right: 8px;
-}
-.book-title {
-    font-family: 'Noto Serif KR', serif;
-    font-size: 18px;
-    font-weight: 700;
-    color: #e8e0d0;
-    margin: 8px 0 4px 0;
-}
-.book-author { font-size: 13px; color: #888; margin-bottom: 10px; }
-.ai-comment {
-    font-size: 14px; color: #b8b0a0; line-height: 1.6;
-    border-left: 2px solid #c8a96e;
-    padding-left: 12px; margin-top: 10px;
-}
-.header-title {
-    font-family: 'Noto Serif KR', serif;
-    font-size: 32px; font-weight: 700; color: #c8a96e; margin-bottom: 4px;
-}
-.header-sub { font-size: 14px; color: #666; margin-bottom: 32px; }
-.stat-box {
-    background: #1a1a1a; border: 1px solid #2a2a2a;
-    border-radius: 8px; padding: 16px; text-align: center;
-}
-.stat-num { font-size: 28px; font-weight: 700; color: #c8a96e; }
-.stat-label { font-size: 12px; color: #666; margin-top: 4px; }
-a.lib-btn {
-    display: inline-block;
-    margin-top: 12px;
-    background: #1e3a2e;
-    color: #7dcc74 !important;
-    border: 1px solid #2d5a40;
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 13px;
-    text-decoration: none !important;
-}
-a.lib-btn:hover { background: #2d5a40; }
-</style>
-""", unsafe_allow_html=True)
-
-READING_DNA = """
-[고평점 픽션 DNA — 4.5~5.0점]
-- 연작/앤솔로지 구조, 챕터마다 시점 전환, 반전 축적
-- 동아시아 작가 압도적 선호 (한국·일본·홍콩·중국)
-- 앙상블 캐릭터, 사회 비평, 심리적 깊이
-- 충격적 반전과 감정적 폭발이 있는 미스터리/스릴러
-- 대표 고평점: 《13.67》찬호께이(5.0), 《성모》아키요시 리카코(4.5), 《살육에 이르는 병》아비코(4.5), 《여섯명의 거짓말쟁이 대학생》아사쿠라(4.5), 《풍선인간》찬호께이(4.5), 《홍학의 자리》정해연(4.5)
-
-[고평점 논픽션 DNA — 4.5~5.0점]
-- 세계관 렌즈를 통째로 바꾸는 책
+@@ -87,89 +90,137 @@ READING_DNA = """
 - 반직관적 프레임워크, 확률적 사고, 역발상
 - 빠른 챕터 페이스, 즉각 적용 가능한 통찰
 - 대표 고평점: 《안티프래질》탈레브(5.0), 《투자에 대한 생각》하워드 막스(5.0), 《감정은 어떻게 만들어지는가》배럿(5.0)
@@ -109,9 +56,28 @@ def get_gemini_key():
     except:
         return None
 
+def _extract_json_payload(raw_text):
+    text = (raw_text or "").strip()
+    if not text:
+        raise ValueError("모델 응답이 비어 있습니다.")
+
+    fence_pattern = r"```(?:json)?\s*(.*?)\s*```"
+    fenced = re.search(fence_pattern, text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end >= start:
+        return text[start : end + 1].strip()
+
+    return text
+
 def generate_recommendations(gemini_key, genre, count):
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    client = genai.Client(api_key=gemini_key)
 
     prompt = f"""
 당신은 독서 취향 분석 전문가입니다. 아래 독서 DNA를 가진 독자에게 맞는 책을 추천하세요.
@@ -138,6 +104,21 @@ def generate_recommendations(gemini_key, genre, count):
 score: 0~100 (취향 적중률 예측)
 verdict: 강력매수(80+) / 매수(60~79) / 관심종목(40~59)
 """
+    response_schema = types.Schema(
+        type=types.Type.ARRAY,
+        items=types.Schema(
+            type=types.Type.OBJECT,
+            required=["title", "author", "score", "verdict", "reason"],
+            properties={
+                "title": types.Schema(type=types.Type.STRING),
+                "author": types.Schema(type=types.Type.STRING),
+                "score": types.Schema(type=types.Type.INTEGER),
+                "verdict": types.Schema(type=types.Type.STRING),
+                "reason": types.Schema(type=types.Type.STRING),
+            },
+        ),
+    )
+
     try:
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -146,8 +127,31 @@ verdict: 강력매수(80+) / 매수(60~79) / 관심종목(40~59)
             if text.startswith("json"):
                 text = text[4:]
         return json.loads(text)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=response_schema,
+                temperature=0.4,
+            ),
+        )
+        text = _extract_json_payload(getattr(response, "text", ""))
+        recommendations = json.loads(text)
+        if not isinstance(recommendations, list) or not recommendations:
+            raise ValueError("추천 결과 JSON이 비어 있거나 배열 형식이 아닙니다.")
+        return recommendations
     except Exception as e:
+        raw_response = ""
+        try:
+            raw_response = getattr(response, "text", "") if "response" in locals() else ""
+        except Exception:
+            raw_response = ""
         st.error(f"AI 분석 실패: {e}")
+        if raw_response:
+            with st.expander("디버그: Gemini 원문 응답 보기"):
+                st.code(raw_response)
+        st.info("추천 생성에 실패했습니다. 잠시 후 다시 시도하거나 GEMINI_MODEL 설정을 확인해주세요.")
         return []
 
 def yangpyeong_search_url(title, author):
@@ -173,66 +177,3 @@ def main():
             "일본 소설",
             "논픽션 / 자기계발",
             "투자 / 경제",
-            "심리학 / 뇌과학",
-            "만화 / 그래픽노블",
-        ])
-    with col2:
-        count = st.slider("추천 권수", 5, 20, 10, 5)
-    with col3:
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    if st.button("🔍 추천 받기", type="primary", use_container_width=True):
-        with st.spinner(f"📖 독서 DNA 분석 중... {genre} {count}권 추천 생성"):
-            books = generate_recommendations(gemini_key, genre, count)
-
-        if not books:
-            st.error("추천 생성에 실패했습니다.")
-            return
-
-        books.sort(key=lambda x: x.get("score", 0), reverse=True)
-
-        st.divider()
-        s1, s2, s3 = st.columns(3)
-        strong = sum(1 for b in books if b.get("score", 0) >= 80)
-        avg = int(sum(b.get("score", 0) for b in books) / len(books)) if books else 0
-
-        with s1:
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{len(books)}</div><div class="stat-label">추천 도서</div></div>', unsafe_allow_html=True)
-        with s2:
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{strong}</div><div class="stat-label">강력매수</div></div>', unsafe_allow_html=True)
-        with s3:
-            st.markdown(f'<div class="stat-box"><div class="stat-num">{avg}</div><div class="stat-label">평균 적중률</div></div>', unsafe_allow_html=True)
-
-        st.divider()
-        st.markdown(f"### 🎯 추천 결과 ({len(books)}권) — 양평도서관 재고 직접 확인")
-
-        for b in books:
-            score = b.get("score", 0)
-            verdict = b.get("verdict", "")
-            title = b.get("title", "")
-            author = b.get("author", "")
-            reason = b.get("reason", "")
-            lib_url = yangpyeong_search_url(title, author)
-
-            verdict_color = {
-                "강력매수": "#c8a96e",
-                "매수": "#7dcc74",
-                "관심종목": "#ccaa44"
-            }.get(verdict, "#888")
-
-            st.markdown(f"""
-<div class="book-card">
-    <span class="score-badge">{score}점</span>
-    <span style="color:{verdict_color}; font-weight:600; font-size:13px;">{verdict}</span>
-    <div class="book-title">{title}</div>
-    <div class="book-author">{author}</div>
-    <div class="ai-comment">{reason}</div>
-    <a class="lib-btn" href="{lib_url}" target="_blank">📖 양평도서관에서 검색 →</a>
-</div>
-""", unsafe_allow_html=True)
-
-    else:
-        st.info("👆 장르 선택 후 추천 받기 버튼을 눌러주세요.")
-
-if __name__ == "__main__":
-    main()
