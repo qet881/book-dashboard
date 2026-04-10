@@ -111,7 +111,7 @@ def get_gemini_key():
 
 def generate_recommendations(gemini_key, genre, count):
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"""
 당신은 독서 취향 분석 전문가입니다. 아래 독서 DNA를 가진 독자에게 맞는 책을 추천하세요.
